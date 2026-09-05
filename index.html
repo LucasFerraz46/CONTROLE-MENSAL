@@ -122,6 +122,7 @@
   .mini-totals span.label{color:var(--ink-soft);display:block;font-family:'Inter',sans-serif;font-size:11px;}
   .mini-totals .in{color:var(--ink);}
   .mini-totals .out{color:var(--brick);}
+  .mini-totals #totalAcumulado{font-weight:600;}
 
   .venc-summary{
     display:flex;gap:22px;flex-wrap:wrap;
@@ -149,6 +150,7 @@
   table.ledger td.del{text-align:center;width:24px;}
   .del-btn{background:none;border:none;color:var(--rule);cursor:pointer;font-size:14px;}
   .del-btn:hover{color:var(--brick);}
+  .edit-btn:hover{color:var(--brass);}
   .empty-row td{padding:18px 6px;color:var(--ink-soft);font-style:italic;text-align:center;}
 
   form.add-entry{
@@ -185,6 +187,7 @@
   }
   .add-btn:hover{background:var(--brass);}
   .parcelas-hint{grid-column:1 / -1;font-size:11.5px;color:var(--ink-soft);margin-top:-2px;}
+  .parcelas-hint a{color:var(--brass);}
 
   .goal-head{display:flex;justify-content:space-between;align-items:baseline;font-size:13px;margin-bottom:4px;}
   .goal-head .goal-nums{font-family:'IBM Plex Mono',monospace;font-size:13px;color:var(--ink-soft);}
@@ -238,6 +241,7 @@
       <div class="mini-totals">
         <div><span class="label">receitas</span><span class="in" id="totalIn">R$ 0,00</span></div>
         <div><span class="label">despesas</span><span class="out" id="totalOut">R$ 0,00</span></div>
+        <div><span class="label">acumulado</span><span id="totalAcumulado">R$ 0,00</span></div>
       </div>
     </div>
     <div class="venc-summary">
@@ -250,7 +254,7 @@
     <h2 class="section-title">Lançamentos</h2>
     <table class="ledger">
       <thead>
-        <tr><th>Data</th><th>Descrição</th><th>Vencimento</th><th style="text-align:right;">Valor</th><th style="text-align:right;">Saldo</th><th></th></tr>
+        <tr><th>Data</th><th>Descrição</th><th>Vencimento</th><th style="text-align:right;">Valor</th><th style="text-align:right;">Saldo</th><th colspan="2"></th></tr>
       </thead>
       <tbody id="ledgerBody"></tbody>
     </table>
@@ -290,6 +294,7 @@
         </div>
       </div>
       <div class="parcelas-hint" id="parcelasHint">Informe o valor de cada parcela. Se a compra já está em andamento, informe em qual parcela você está agora (ex.: 3) e de quantas no total (ex.: 6) — o site lança daqui em diante, uma por mês, no mesmo vencimento.</div>
+      <div class="parcelas-hint" id="editingHint" style="display:none;">Editando um lançamento existente — parcelas não serão recriadas. <a href="#" id="cancelEditLink">cancelar edição</a></div>
     </form>
   </section>
 
@@ -355,9 +360,31 @@
     return data.months[key];
   }
 
+  function monthTotals(key){
+    const month = data.months[key];
+    let totalIn=0, totalOut=0;
+    if(month){
+      month.entries.forEach(e=>{
+        if(e.tipo==='receita') totalIn += e.valor; else totalOut += e.valor;
+      });
+    }
+    return {totalIn, totalOut, saldo: totalIn-totalOut};
+  }
+
+  function saldoAcumuladoAte(key){
+    // soma o saldo de todos os meses registrados até e incluindo o mês informado
+    let acumulado = 0;
+    Object.keys(data.months).sort().forEach(k=>{
+      if(k<=key) acumulado += monthTotals(k).saldo;
+    });
+    return acumulado;
+  }
+
   let currentDate = new Date();
   let currentKey = monthKeyFromDate(currentDate);
   ensureMonth(currentKey);
+
+  let editingId = null; // {monthKey, entryId} enquanto um lançamento está sendo editado
 
   const VENC_LABEL = { dia5: '5º dia útil', dia20: 'dia 20' };
 
@@ -397,7 +424,7 @@
     const body = document.getElementById('ledgerBody');
     body.innerHTML = '';
     if(month.entries.length===0){
-      body.innerHTML = '<tr class="empty-row"><td colspan="6">nenhum lançamento neste mês</td></tr>';
+      body.innerHTML = '<tr class="empty-row"><td colspan="7">nenhum lançamento neste mês</td></tr>';
     }else{
       const sorted = [...month.entries].sort((a,b)=> a.data.localeCompare(b.data));
       let running = 0;
@@ -411,13 +438,20 @@
           <td>${e.vencimento ? VENC_LABEL[e.vencimento] : '—'}</td>
           <td class="num ${e.tipo==='despesa'?'neg':''}">${e.tipo==='despesa'?'-':'+'} ${fmt(e.valor)}</td>
           <td class="num ${running<0?'neg':''}">${fmt(running)}</td>
+          <td class="del"><button class="del-btn edit-btn" data-id="${e.id}" title="editar">✎</button></td>
           <td class="del"><button class="del-btn" data-id="${e.id}" title="excluir">✕</button></td>
         `;
         body.appendChild(tr);
       });
     }
-    body.querySelectorAll('.del-btn').forEach(btn=>{
+    body.querySelectorAll('.edit-btn').forEach(btn=>{
       btn.addEventListener('click', ()=>{
+        startEdit(btn.dataset.id);
+      });
+    });
+    body.querySelectorAll('.del-btn:not(.edit-btn)').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        if(!confirm('Excluir este lançamento? Essa ação não pode ser desfeita.')) return;
         const id = btn.dataset.id;
         month.entries = month.entries.filter(e=>e.id!==id);
         saveData(); renderAll();
@@ -427,22 +461,23 @@
 
   function renderSummary(){
     const month = ensureMonth(currentKey);
-    let totalIn=0, totalOut=0, totalDia5=0, totalDia20=0;
+    let totalDia5=0, totalDia20=0;
     month.entries.forEach(e=>{
-      if(e.tipo==='receita'){
-        totalIn += e.valor;
-      }else{
-        totalOut += e.valor;
+      if(e.tipo==='despesa'){
         if(e.vencimento==='dia5') totalDia5 += e.valor;
         else if(e.vencimento==='dia20') totalDia20 += e.valor;
       }
     });
-    const saldo = totalIn - totalOut;
+    const {totalIn, totalOut, saldo} = monthTotals(currentKey);
     const fig = document.getElementById('balanceFigure');
     fig.textContent = (saldo<0?'-':'') + fmt(saldo);
     fig.className = 'balance-figure ' + (saldo<0?'neg':'pos');
     document.getElementById('totalIn').textContent = fmt(totalIn);
     document.getElementById('totalOut').textContent = fmt(totalOut);
+    const acumulado = saldoAcumuladoAte(currentKey);
+    const acEl = document.getElementById('totalAcumulado');
+    acEl.textContent = (acumulado<0?'-':'') + fmt(acumulado);
+    acEl.style.color = acumulado<0 ? 'var(--brick)' : 'var(--ink)';
     document.getElementById('totalDia5').textContent = fmt(totalDia5);
     document.getElementById('totalDia20').textContent = fmt(totalDia20);
     return totalOut;
@@ -508,6 +543,68 @@
     btn.className = 'on';
   });
 
+  function startEdit(entryId){
+    let foundMonthKey=null, foundEntry=null;
+    Object.keys(data.months).forEach(k=>{
+      const e = data.months[k].entries.find(x=>x.id===entryId);
+      if(e){ foundMonthKey=k; foundEntry=e; }
+    });
+    if(!foundEntry) return;
+    editingId = {monthKey:foundMonthKey, entryId};
+
+    document.getElementById('fData').value = foundEntry.data;
+    document.getElementById('fDesc').value = foundEntry.descricao;
+    document.getElementById('fValor').value = foundEntry.valor.toFixed(2).replace('.',',');
+
+    document.querySelectorAll('#typeToggle button').forEach(b=>b.className='');
+    document.querySelector(`#typeToggle button[data-type="${foundEntry.tipo}"]`).className =
+      foundEntry.tipo==='despesa' ? 'active-out' : 'active-in';
+    const isDespesa = foundEntry.tipo==='despesa';
+    document.getElementById('vencWrap').style.display = isDespesa ? 'flex' : 'none';
+    if(isDespesa){
+      document.querySelectorAll('#vencToggle button').forEach(b=>b.className='');
+      const vBtn = document.querySelector(`#vencToggle button[data-venc="${foundEntry.vencimento||'dia5'}"]`);
+      if(vBtn) vBtn.className = 'on';
+    }
+
+    document.getElementById('parcelasWrap').style.display = 'none';
+    document.getElementById('parcelasHint').style.display = 'none';
+    document.getElementById('fParcelaAtual').value = 1;
+    document.getElementById('fParcelaTotal').value = 1;
+    document.getElementById('editingHint').style.display = 'block';
+
+    const addBtn = document.querySelector('#addEntryForm .add-btn');
+    addBtn.textContent = '✓';
+    addBtn.title = 'Salvar edição';
+
+    document.getElementById('addEntryForm').scrollIntoView({behavior:'smooth', block:'center'});
+  }
+
+  function cancelEdit(){
+    editingId = null;
+    const form = document.getElementById('addEntryForm');
+    form.reset();
+    document.getElementById('fData').value = new Date().toISOString().slice(0,10);
+    document.getElementById('fParcelaAtual').value = 1;
+    document.getElementById('fParcelaTotal').value = 1;
+    document.querySelectorAll('#typeToggle button').forEach(b=>b.className='');
+    document.querySelector('#typeToggle button[data-type="despesa"]').className = 'active-out';
+    document.getElementById('parcelasWrap').style.display = 'block';
+    document.getElementById('parcelasHint').style.display = 'block';
+    document.getElementById('vencWrap').style.display = 'flex';
+    document.querySelectorAll('#vencToggle button').forEach(b=>b.className='');
+    document.querySelector('#vencToggle button[data-venc="dia5"]').className = 'on';
+    document.getElementById('editingHint').style.display = 'none';
+    const addBtn = document.querySelector('#addEntryForm .add-btn');
+    addBtn.textContent = '+';
+    addBtn.title = 'Adicionar lançamento';
+  }
+
+  document.getElementById('cancelEditLink').addEventListener('click', (e)=>{
+    e.preventDefault();
+    cancelEdit();
+  });
+
   document.getElementById('addEntryForm').addEventListener('submit', (e)=>{
     e.preventDefault();
     const type = document.querySelector('#typeToggle button.active-out, #typeToggle button.active-in').dataset.type;
@@ -515,16 +612,34 @@
     if(isNaN(parcelaValor) || parcelaValor<=0){ alert('Informe um valor válido.'); return; }
     const dataStr = document.getElementById('fData').value;
     const descBase = document.getElementById('fDesc').value.trim() || '(sem descrição)';
+    const vencimento = type==='despesa'
+      ? document.querySelector('#vencToggle button.on').dataset.venc
+      : null;
+
+    if(editingId){
+      const oldMonth = data.months[editingId.monthKey];
+      const idx = oldMonth ? oldMonth.entries.findIndex(x=>x.id===editingId.entryId) : -1;
+      if(idx===-1){ cancelEdit(); renderAll(); return; }
+      const [entry] = oldMonth.entries.splice(idx,1);
+      entry.data = dataStr;
+      entry.descricao = descBase;
+      entry.tipo = type;
+      entry.valor = parcelaValor;
+      entry.vencimento = vencimento;
+      const newMonthKey = dataStr.slice(0,7);
+      ensureMonth(newMonthKey).entries.push(entry);
+      saveData();
+      currentKey = newMonthKey;
+      cancelEdit();
+      renderAll();
+      return;
+    }
 
     let parcelaAtual = type==='despesa' ? parseInt(document.getElementById('fParcelaAtual').value, 10) : 1;
     let parcelaTotal = type==='despesa' ? parseInt(document.getElementById('fParcelaTotal').value, 10) : 1;
     if(isNaN(parcelaTotal) || parcelaTotal<1) parcelaTotal = 1;
     if(isNaN(parcelaAtual) || parcelaAtual<1) parcelaAtual = 1;
     if(parcelaAtual>parcelaTotal) parcelaAtual = parcelaTotal;
-
-    const vencimento = type==='despesa'
-      ? document.querySelector('#vencToggle button.on').dataset.venc
-      : null;
 
     const baseMonthKey = dataStr.slice(0,7);
     const groupId = 'g'+Date.now()+Math.random().toString(36).slice(2,7);
@@ -584,6 +699,10 @@
   document.getElementById('importFile').addEventListener('change', (e)=>{
     const file = e.target.files[0];
     if(!file) return;
+    if(!confirm('Importar este arquivo vai substituir todos os dados salvos neste navegador. Deseja continuar?')){
+      e.target.value = '';
+      return;
+    }
     const reader = new FileReader();
     reader.onload = (ev)=>{
       try{
