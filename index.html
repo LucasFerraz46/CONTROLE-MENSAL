@@ -265,12 +265,15 @@
         <input type="text" id="fDesc" placeholder="ex.: mercado da semana" required>
       </div>
       <div>
-        <label>Valor</label>
+        <label>Valor da parcela</label>
         <input type="text" inputmode="decimal" id="fValor" placeholder="0,00" required>
       </div>
       <div id="parcelasWrap">
-        <label>Parcelas</label>
-        <input type="number" id="fParcelas" min="1" value="1">
+        <label>Parcela nº / de</label>
+        <div style="display:flex;gap:4px;">
+          <input type="number" id="fParcelaAtual" min="1" value="1" title="em qual parcela esta conta está" style="width:50%;">
+          <input type="number" id="fParcelaTotal" min="1" value="1" title="total de parcelas" style="width:50%;">
+        </div>
       </div>
       <button type="submit" class="add-btn" title="Adicionar lançamento">+</button>
       <div class="toggle-row">
@@ -286,7 +289,7 @@
           </div>
         </div>
       </div>
-      <div class="parcelas-hint" id="parcelasHint">Em compras parceladas, informe o valor total da compra — cada parcela entra automaticamente no mês seguinte, no mesmo vencimento.</div>
+      <div class="parcelas-hint" id="parcelasHint">Informe o valor de cada parcela. Se a compra já está em andamento, informe em qual parcela você está agora (ex.: 3) e de quantas no total (ex.: 6) — o site lança daqui em diante, uma por mês, no mesmo vencimento.</div>
     </form>
   </section>
 
@@ -508,48 +511,50 @@
   document.getElementById('addEntryForm').addEventListener('submit', (e)=>{
     e.preventDefault();
     const type = document.querySelector('#typeToggle button.active-out, #typeToggle button.active-in').dataset.type;
-    const totalValor = parseValor(document.getElementById('fValor').value);
-    if(isNaN(totalValor) || totalValor<=0){ alert('Informe um valor válido.'); return; }
+    const parcelaValor = parseValor(document.getElementById('fValor').value);
+    if(isNaN(parcelaValor) || parcelaValor<=0){ alert('Informe um valor válido.'); return; }
     const dataStr = document.getElementById('fData').value;
     const descBase = document.getElementById('fDesc').value.trim() || '(sem descrição)';
-    let parcelas = type==='despesa' ? parseInt(document.getElementById('fParcelas').value, 10) : 1;
-    if(isNaN(parcelas) || parcelas<1) parcelas = 1;
+
+    let parcelaAtual = type==='despesa' ? parseInt(document.getElementById('fParcelaAtual').value, 10) : 1;
+    let parcelaTotal = type==='despesa' ? parseInt(document.getElementById('fParcelaTotal').value, 10) : 1;
+    if(isNaN(parcelaTotal) || parcelaTotal<1) parcelaTotal = 1;
+    if(isNaN(parcelaAtual) || parcelaAtual<1) parcelaAtual = 1;
+    if(parcelaAtual>parcelaTotal) parcelaAtual = parcelaTotal;
+
     const vencimento = type==='despesa'
       ? document.querySelector('#vencToggle button.on').dataset.venc
       : null;
 
     const baseMonthKey = dataStr.slice(0,7);
     const groupId = 'g'+Date.now()+Math.random().toString(36).slice(2,7);
-
-    // valor por parcela, com o último ajustado para fechar a soma exata
-    const parcelaValor = Math.round((totalValor/parcelas)*100)/100;
-    const soma = parcelaValor*(parcelas-1);
-    const ultimaParcelaValor = Math.round((totalValor - soma)*100)/100;
+    const restantes = parcelaTotal - parcelaAtual + 1; // quantas parcelas serão lançadas a partir de hoje
 
     const [y,m,d] = dataStr.split('-').map(Number);
-    for(let i=0; i<parcelas; i++){
+    for(let i=0; i<restantes; i++){
+      const numeroParcela = parcelaAtual + i;
       const parcelaMonthKey = addMonthsToKey(baseMonthKey, i);
       const [py,pm] = parcelaMonthKey.split('-').map(Number);
       const lastDay = new Date(py, pm, 0).getDate();
       const entryDay = Math.min(d, lastDay);
       const entryDate = `${py}-${String(pm).padStart(2,'0')}-${String(entryDay).padStart(2,'0')}`;
-      const valor = i===parcelas-1 ? ultimaParcelaValor : parcelaValor;
-      const descricao = parcelas>1 ? `${descBase} (${i+1}/${parcelas})` : descBase;
+      const descricao = parcelaTotal>1 ? `${descBase} (${numeroParcela}/${parcelaTotal})` : descBase;
       ensureMonth(parcelaMonthKey).entries.push({
         id: 'e'+Date.now()+Math.random().toString(36).slice(2,7)+i,
         data: entryDate,
         descricao,
         tipo: type,
-        valor,
+        valor: parcelaValor,
         vencimento,
-        grupoId: parcelas>1 ? groupId : null
+        grupoId: parcelaTotal>1 ? groupId : null
       });
     }
     saveData();
     currentKey = baseMonthKey;
     e.target.reset();
     document.getElementById('fData').value = '';
-    document.getElementById('fParcelas').value = 1;
+    document.getElementById('fParcelaAtual').value = 1;
+    document.getElementById('fParcelaTotal').value = 1;
     document.querySelectorAll('#vencToggle button').forEach(b=>b.className='');
     document.querySelector('#vencToggle button[data-venc="dia5"]').className = 'on';
     renderAll();
